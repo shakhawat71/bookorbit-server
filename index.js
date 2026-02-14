@@ -111,10 +111,8 @@ async function run() {
         res.status(500).send({ message: "Server error" });
       }
     });
-
-    // ===============================
-    // GET MY ORDERS (🔥 THIS FIXES 404)
-    // ===============================
+ 
+    // GET MY ORDERS 
 
     app.get("/orders/my", verifyToken, async (req, res) => {
       try {
@@ -131,11 +129,7 @@ async function run() {
       }
     });
 
-
-
-    // ===============================
     // CANCEL ORDER
-    // ===============================
 
     app.patch("/orders/:id/cancel", verifyToken, async (req, res) => {
       try {
@@ -174,6 +168,27 @@ async function run() {
 }
 
 run().catch(console.dir);
+
+// Add Book (Protected to librarian/admin)
+app.post("/books", verifyToken, async (req, res) => {
+  try {
+    const bookData = req.body;
+
+    const newBook = {
+      ...bookData,
+      librarianEmail: req.user.email, 
+      createdAt: new Date(),
+    };
+
+    const result = await booksCollection.insertOne(newBook);
+
+    res.send(result);
+  } catch (error) {
+    res.status(500).send({ error: "Failed to add book" });
+  }
+});
+
+
 
 app.listen(port, () => {
   console.log(`🚀 Server running on port ${port}`);

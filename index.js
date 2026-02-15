@@ -91,18 +91,14 @@ async function run() {
       res.send(result);
     });
 
-    // ✅ Get current user role (Dynamic role fetching)
+    // Get current user role
     app.get("/users/role", verifyToken, async (req, res) => {
       try {
-        const email = req.user.email;
+        const user = await usersCollection.findOne({
+          email: req.user.email,
+        });
 
-        const user = await usersCollection.findOne({ email });
-
-        if (!user) {
-          return res.send({ role: "user" });
-        }
-
-        res.send({ role: user.role || "user" });
+        res.send({ role: user?.role || "user" });
       } catch (error) {
         res.status(500).send({ message: "Failed to fetch role" });
       }
@@ -112,9 +108,17 @@ async function run() {
     // BOOK ROUTES
     // =====================================================
 
-    // Add Book (Librarian/Admin)
+    // Add Book (Only Librarian or Admin)
     app.post("/books", verifyToken, async (req, res) => {
       try {
+        const user = await usersCollection.findOne({
+          email: req.user.email,
+        });
+
+        if (!user || (user.role !== "librarian" && user.role !== "admin")) {
+          return res.status(403).send({ message: "Forbidden" });
+        }
+
         const bookData = req.body;
 
         const newBook = {
@@ -136,27 +140,29 @@ async function run() {
       }
     });
 
-    // Get all books (Admin / Testing)
+    // ✅ Public books (published only support via query)
     app.get("/books", async (req, res) => {
-      const result = await booksCollection.find().toArray();
-      res.send(result);
-    });
+      try {
+        const { status } = req.query;
 
-    // Get published books (Public)
-    app.get("/books/published", async (req, res) => {
-      const result = await booksCollection
-        .find({ status: "published" })
-        .toArray();
-      res.send(result);
+        let query = {};
+
+        if (status === "published") {
+          query.status = "published";
+        }
+
+        const result = await booksCollection.find(query).toArray();
+        res.send(result);
+      } catch (error) {
+        res.status(500).send({ message: "Failed to fetch books" });
+      }
     });
 
     // Get my books (Librarian)
     app.get("/books/mine", verifyToken, async (req, res) => {
       try {
-        const email = req.user.email;
-
         const result = await booksCollection
-          .find({ librarianEmail: email })
+          .find({ librarianEmail: req.user.email })
           .toArray();
 
         res.send(result);
@@ -165,11 +171,10 @@ async function run() {
       }
     });
 
-    // Update Book (Admin or Owner)
+    // Update Book
     app.patch("/books/:id", verifyToken, async (req, res) => {
       try {
         const { id } = req.params;
-        const updatedData = req.body;
 
         const book = await booksCollection.findOne({
           _id: new ObjectId(id),
@@ -182,9 +187,6 @@ async function run() {
           email: req.user.email,
         });
 
-        if (!user)
-          return res.status(403).send({ message: "Unauthorized" });
-
         if (
           user.role !== "admin" &&
           book.librarianEmail !== req.user.email
@@ -194,17 +196,17 @@ async function run() {
 
         const result = await booksCollection.updateOne(
           { _id: new ObjectId(id) },
-          { $set: updatedData }
+          { $set: req.body }
         );
 
         res.send(result);
       } catch (error) {
         console.error("PATCH /books/:id error:", error);
-        res.status(500).send({ message: "Failed to update book" });
+        res.status(500).send({ message: "Update failed" });
       }
     });
 
-    // Delete Book (Admin or Owner)
+    // Delete Book
     app.delete("/books/:id", verifyToken, async (req, res) => {
       try {
         const { id } = req.params;
@@ -219,9 +221,6 @@ async function run() {
         const user = await usersCollection.findOne({
           email: req.user.email,
         });
-
-        if (!user)
-          return res.status(403).send({ message: "Unauthorized" });
 
         if (
           user.role !== "admin" &&
@@ -245,13 +244,10 @@ async function run() {
     // ORDERS
     // =====================================================
 
-    // Create Order
     app.post("/orders", verifyToken, async (req, res) => {
       try {
-        const orderData = req.body;
-
         const newOrder = {
-          ...orderData,
+          ...req.body,
           userEmail: req.user.email,
           status: "pending",
           paymentStatus: "unpaid",
@@ -261,60 +257,45 @@ async function run() {
         const result = await ordersCollection.insertOne(newOrder);
         res.send(result);
       } catch (error) {
-        console.error("POST /orders error:", error);
         res.status(500).send({ message: "Server error" });
       }
     });
 
-    // Get My Orders
     app.get("/orders/my", verifyToken, async (req, res) => {
-      try {
-        const email = req.user.email;
+      const result = await ordersCollection
+        .find({ userEmail: req.user.email })
+        .sort({ orderDate: -1 })
+        .toArray();
 
-        const result = await ordersCollection
-          .find({ userEmail: email })
-          .sort({ orderDate: -1 })
-          .toArray();
-
-        res.send(result);
-      } catch (error) {
-        console.error("GET /orders/my error:", error);
-        res.status(500).send({ message: "Server error" });
-      }
+      res.send(result);
     });
 
-    // Cancel Order
     app.patch("/orders/:id/cancel", verifyToken, async (req, res) => {
-      try {
-        const { id } = req.params;
-        const email = req.user.email;
+      const { id } = req.params;
 
-        const order = await ordersCollection.findOne({
-          _id: new ObjectId(id),
-        });
+      const order = await ordersCollection.findOne({
+        _id: new ObjectId(id),
+      });
 
-        if (!order)
-          return res.status(404).send({ message: "Order not found" });
+      if (!order)
+        return res.status(404).send({ message: "Order not found" });
 
-        if (order.userEmail !== email)
-          return res.status(403).send({ message: "Forbidden" });
+      if (order.userEmail !== req.user.email)
+        return res.status(403).send({ message: "Forbidden" });
 
-        if (order.status !== "pending")
-          return res
-            .status(400)
-            .send({ message: "Only pending orders can be cancelled" });
+      if (order.status !== "pending")
+        return res
+          .status(400)
+          .send({ message: "Only pending orders can be cancelled" });
 
-        const result = await ordersCollection.updateOne(
-          { _id: new ObjectId(id) },
-          { $set: { status: "cancelled" } }
-        );
+      const result = await ordersCollection.updateOne(
+        { _id: new ObjectId(id) },
+        { $set: { status: "cancelled" } }
+      );
 
-        res.send(result);
-      } catch (error) {
-        console.error("PATCH /orders/:id/cancel error:", error);
-        res.status(500).send({ message: "Server error" });
-      }
+      res.send(result);
     });
+
   } catch (error) {
     console.error("❌ run() error:", error);
   }

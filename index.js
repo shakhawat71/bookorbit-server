@@ -6,7 +6,9 @@ require("dotenv").config();
 const app = express();
 const port = process.env.PORT || 5000;
 
-// ✅ Middleware
+// ===============================
+// Middleware
+// ===============================
 app.use(
   cors({
     origin: ["http://localhost:5173"],
@@ -15,15 +17,21 @@ app.use(
 );
 app.use(express.json());
 
-// ✅ Firebase verifyToken
+// ===============================
+// Firebase verifyToken middleware
+// ===============================
 const verifyToken = require("./middlewares/verifyToken");
 
-// ✅ Root route
+// ===============================
+// Root Route
+// ===============================
 app.get("/", (req, res) => {
   res.send("BookOrbit server is running ✅");
 });
 
-// ✅ Mongo URI
+// ===============================
+// MongoDB Setup
+// ===============================
 const uri = process.env.MONGODB_URI;
 if (!uri) console.log("❌ MONGODB_URI missing in .env");
 
@@ -37,7 +45,6 @@ const client = new MongoClient(uri, {
 
 async function run() {
   try {
-    // ✅ MUST connect
     await client.connect();
     console.log("✅ MongoDB Connected!");
 
@@ -48,13 +55,14 @@ async function run() {
     const ordersCollection = db.collection("orders");
     const paymentsCollection = db.collection("payments");
 
-    // ✅ Ping test
     await client.db("admin").command({ ping: 1 });
     console.log("✅ MongoDB Ping OK");
 
-    // ===============================
-    // USERS (Upsert on login/register)
-    // ===============================
+    // =====================================================
+    // USERS
+    // =====================================================
+
+    // Upsert user (Login/Register sync)
     app.put("/users", async (req, res) => {
       const user = req.body;
 
@@ -83,150 +91,161 @@ async function run() {
       res.send(result);
     });
 
-    // ===============================
-    // PROTECTED TEST ROUTE
-    // ===============================
-    app.get("/protected", verifyToken, (req, res) => {
-      res.send({
-        message: "Protected route accessed!",
-        user: req.user,
-      });
+    // ✅ Get current user role (Dynamic role fetching)
+    app.get("/users/role", verifyToken, async (req, res) => {
+      try {
+        const email = req.user.email;
+
+        const user = await usersCollection.findOne({ email });
+
+        if (!user) {
+          return res.send({ role: "user" });
+        }
+
+        res.send({ role: user.role || "user" });
+      } catch (error) {
+        res.status(500).send({ message: "Failed to fetch role" });
+      }
     });
 
-   
+    // =====================================================
     // BOOK ROUTES
+    // =====================================================
 
-
-    // Add Book
+    // Add Book (Librarian/Admin)
     app.post("/books", verifyToken, async (req, res) => {
-    try {
-    const bookData = req.body;
+      try {
+        const bookData = req.body;
 
-    const newBook = {
-      name: bookData.name,
-      author: bookData.author,
-      image: bookData.image,
-      price: Number(bookData.price),
-      status: bookData.status || "unpublished",
-      description: bookData.description || "",
-      librarianEmail: req.user.email,
-      createdAt: new Date(),
-    };
+        const newBook = {
+          name: bookData.name,
+          author: bookData.author,
+          image: bookData.image,
+          price: Number(bookData.price),
+          status: bookData.status || "unpublished",
+          description: bookData.description || "",
+          librarianEmail: req.user.email,
+          createdAt: new Date(),
+        };
 
-    const result = await booksCollection.insertOne(newBook);
-    res.send(result);
-    } catch (error) {
-    console.error("POST /books error:", error);
-    res.status(500).send({ message: "Failed to add book" });
-    }
+        const result = await booksCollection.insertOne(newBook);
+        res.send(result);
+      } catch (error) {
+        console.error("POST /books error:", error);
+        res.status(500).send({ message: "Failed to add book" });
+      }
     });
 
-
-    // Get All Books (Admin / Testing)
+    // Get all books (Admin / Testing)
     app.get("/books", async (req, res) => {
-    const result = await booksCollection.find().toArray();
-    res.send(result);
+      const result = await booksCollection.find().toArray();
+      res.send(result);
     });
 
+    // Get published books (Public)
+    app.get("/books/published", async (req, res) => {
+      const result = await booksCollection
+        .find({ status: "published" })
+        .toArray();
+      res.send(result);
+    });
 
-    // Get My Books (Librarian)
+    // Get my books (Librarian)
     app.get("/books/mine", verifyToken, async (req, res) => {
-    try {
+      try {
         const email = req.user.email;
 
         const result = await booksCollection
-        .find({ librarianEmail: email })
-        .toArray();
+          .find({ librarianEmail: email })
+          .toArray();
 
         res.send(result);
-    } catch (error) {
+      } catch (error) {
         res.status(500).send({ message: "Failed to fetch books" });
-    }
+      }
     });
 
-
-    //  Update Book (Admin or Owner Librarian)
+    // Update Book (Admin or Owner)
     app.patch("/books/:id", verifyToken, async (req, res) => {
-    try {
+      try {
         const { id } = req.params;
         const updatedData = req.body;
 
         const book = await booksCollection.findOne({
-        _id: new ObjectId(id),
+          _id: new ObjectId(id),
         });
 
         if (!book)
-        return res.status(404).send({ message: "Book not found" });
+          return res.status(404).send({ message: "Book not found" });
 
         const user = await usersCollection.findOne({
-        email: req.user.email,
+          email: req.user.email,
         });
 
         if (!user)
-        return res.status(403).send({ message: "Unauthorized" });
+          return res.status(403).send({ message: "Unauthorized" });
 
         if (
-        user.role !== "admin" &&
-        book.librarianEmail !== req.user.email
+          user.role !== "admin" &&
+          book.librarianEmail !== req.user.email
         ) {
-        return res.status(403).send({ message: "Forbidden" });
+          return res.status(403).send({ message: "Forbidden" });
         }
 
         const result = await booksCollection.updateOne(
-        { _id: new ObjectId(id) },
-        { $set: updatedData }
+          { _id: new ObjectId(id) },
+          { $set: updatedData }
         );
 
         res.send(result);
-    } catch (error) {
+      } catch (error) {
         console.error("PATCH /books/:id error:", error);
         res.status(500).send({ message: "Failed to update book" });
-    }
+      }
     });
 
-
-    //  Delete Book (Admin Only)
+    // Delete Book (Admin or Owner)
     app.delete("/books/:id", verifyToken, async (req, res) => {
-  try {
-    const { id } = req.params;
+      try {
+        const { id } = req.params;
 
-    const book = await booksCollection.findOne({
-      _id: new ObjectId(id),
+        const book = await booksCollection.findOne({
+          _id: new ObjectId(id),
+        });
+
+        if (!book)
+          return res.status(404).send({ message: "Book not found" });
+
+        const user = await usersCollection.findOne({
+          email: req.user.email,
+        });
+
+        if (!user)
+          return res.status(403).send({ message: "Unauthorized" });
+
+        if (
+          user.role !== "admin" &&
+          book.librarianEmail !== req.user.email
+        ) {
+          return res.status(403).send({ message: "Forbidden" });
+        }
+
+        await booksCollection.deleteOne({
+          _id: new ObjectId(id),
+        });
+
+        res.send({ message: "Book deleted successfully" });
+      } catch (error) {
+        console.error("DELETE /books/:id error:", error);
+        res.status(500).send({ message: "Delete failed" });
+      }
     });
 
-    if (!book)
-      return res.status(404).send({ message: "Book not found" });
-
-    const user = await usersCollection.findOne({
-      email: req.user.email,
-    });
-
-    if (!user)
-      return res.status(403).send({ message: "Unauthorized" });
-
-    // ✅ Admin OR librarian who created it
-    if (
-      user.role !== "admin" &&
-      book.librarianEmail !== req.user.email
-    ) {
-      return res.status(403).send({ message: "Forbidden" });
-    }
-
-    await booksCollection.deleteOne({ _id: new ObjectId(id) });
-
-    res.send({ message: "Book deleted successfully" });
-  } catch (error) {
-    res.status(500).send({ message: "Delete failed" });
-  }
-});
-
-
-
-
+    // =====================================================
     // ORDERS
+    // =====================================================
 
-
-    // Create order
+    // Create Order
     app.post("/orders", verifyToken, async (req, res) => {
       try {
         const orderData = req.body;
@@ -247,7 +266,7 @@ async function run() {
       }
     });
 
-    // Get my orders
+    // Get My Orders
     app.get("/orders/my", verifyToken, async (req, res) => {
       try {
         const email = req.user.email;
@@ -264,15 +283,18 @@ async function run() {
       }
     });
 
-    //  Cancel order
+    // Cancel Order
     app.patch("/orders/:id/cancel", verifyToken, async (req, res) => {
       try {
         const { id } = req.params;
         const email = req.user.email;
 
-        const order = await ordersCollection.findOne({ _id: new ObjectId(id) });
+        const order = await ordersCollection.findOne({
+          _id: new ObjectId(id),
+        });
 
-        if (!order) return res.status(404).send({ message: "Order not found" });
+        if (!order)
+          return res.status(404).send({ message: "Order not found" });
 
         if (order.userEmail !== email)
           return res.status(403).send({ message: "Forbidden" });
@@ -294,12 +316,12 @@ async function run() {
       }
     });
   } catch (error) {
-    console.error(" run() error:", error);
+    console.error("❌ run() error:", error);
   }
 }
 
 run().catch(console.dir);
 
 app.listen(port, () => {
-  console.log(` Server running on port ${port}`);
+  console.log(`🚀 Server running on port ${port}`);
 });

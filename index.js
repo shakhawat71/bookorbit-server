@@ -187,32 +187,40 @@ async function run() {
 
     //  Delete Book (Admin Only)
     app.delete("/books/:id", verifyToken, async (req, res) => {
-    try {
-        const { id } = req.params;
+  try {
+    const { id } = req.params;
 
-        const user = await usersCollection.findOne({
-        email: req.user.email,
-        });
-
-        if (!user || user.role !== "admin") {
-        return res.status(403).send({ message: "Admin only" });
-        }
-
-        await booksCollection.deleteOne({
-        _id: new ObjectId(id),
-        });
-
-        // Optional: Also delete related orders
-        await ordersCollection.deleteMany({
-        bookId: id,
-        });
-
-        res.send({ message: "Book deleted successfully" });
-    } catch (error) {
-        console.error("DELETE /books/:id error:", error);
-        res.status(500).send({ message: "Failed to delete book" });
-    }
+    const book = await booksCollection.findOne({
+      _id: new ObjectId(id),
     });
+
+    if (!book)
+      return res.status(404).send({ message: "Book not found" });
+
+    const user = await usersCollection.findOne({
+      email: req.user.email,
+    });
+
+    if (!user)
+      return res.status(403).send({ message: "Unauthorized" });
+
+    // ✅ Admin OR librarian who created it
+    if (
+      user.role !== "admin" &&
+      book.librarianEmail !== req.user.email
+    ) {
+      return res.status(403).send({ message: "Forbidden" });
+    }
+
+    await booksCollection.deleteOne({ _id: new ObjectId(id) });
+
+    res.send({ message: "Book deleted successfully" });
+  } catch (error) {
+    res.status(500).send({ message: "Delete failed" });
+  }
+});
+
+
 
 
     // ORDERS

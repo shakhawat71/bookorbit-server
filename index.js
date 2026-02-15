@@ -240,6 +240,25 @@ async function run() {
       }
     });
 
+    // Get single book by id
+      app.get("/books/:id", async (req, res) => {
+        try {
+          const { id } = req.params;
+
+          const book = await booksCollection.findOne({
+            _id: new ObjectId(id),
+          });
+
+          if (!book)
+            return res.status(404).send({ message: "Book not found" });
+
+          res.send(book);
+        } catch (error) {
+          res.status(500).send({ message: "Failed to fetch book" });
+        }
+      });
+
+
     // =====================================================
     // ORDERS
     // =====================================================

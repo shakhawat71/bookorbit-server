@@ -140,13 +140,12 @@ async function run() {
       }
     });
 
-    // ✅ Public books (published only support via query)
+   // ✅ Public books (published only using query)
     app.get("/books", async (req, res) => {
       try {
         const { status } = req.query;
 
         let query = {};
-
         if (status === "published") {
           query.status = "published";
         }
@@ -157,6 +156,21 @@ async function run() {
         res.status(500).send({ message: "Failed to fetch books" });
       }
     });
+
+    // ✅ Get single book by id (Public)
+    app.get("/books/:id", async (req, res) => {
+      try {
+        const { id } = req.params;
+
+        const book = await booksCollection.findOne({ _id: new ObjectId(id) });
+        if (!book) return res.status(404).send({ message: "Book not found" });
+
+        res.send(book);
+      } catch (error) {
+        res.status(500).send({ message: "Failed to fetch book" });
+      }
+    });
+
 
     // Get my books (Librarian)
     app.get("/books/mine", verifyToken, async (req, res) => {
@@ -240,23 +254,6 @@ async function run() {
       }
     });
 
-    // Get single book by id
-      app.get("/books/:id", async (req, res) => {
-        try {
-          const { id } = req.params;
-
-          const book = await booksCollection.findOne({
-            _id: new ObjectId(id),
-          });
-
-          if (!book)
-            return res.status(404).send({ message: "Book not found" });
-
-          res.send(book);
-        } catch (error) {
-          res.status(500).send({ message: "Failed to fetch book" });
-        }
-      });
 
 
     // =====================================================

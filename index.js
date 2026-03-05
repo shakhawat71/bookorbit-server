@@ -1,4 +1,4 @@
-// ✅ server/index.js (FULL FILE - copy/paste)
+// ✅ server/index.js (FULL - with Users, Books, Orders, Payments, Wishlist, Admin + Librarian features)
 const express = require("express");
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const cors = require("cors");
@@ -14,18 +14,14 @@ const port = process.env.PORT || 5000;
 // ===============================
 app.use(
   cors({
-    origin: [
-      "http://localhost:5173",
-      // add your deployed client url here later:
-      // "https://your-live-site.netlify.app"
-    ],
+    origin: ["http://localhost:5173"],
     credentials: true,
   })
 );
 app.use(express.json());
 
 // ===============================
-// Root Route
+// Root
 // ===============================
 app.get("/", (req, res) => {
   res.send("BookOrbit server is running ✅");
@@ -48,9 +44,11 @@ const client = new MongoClient(uri, {
 // ===============================
 // Helpers
 // ===============================
+const normalizeEmail = (email) => (email ? String(email).toLowerCase() : "");
+
 const getUserRole = async (usersCollection, email) => {
-  const u = await usersCollection.findOne({ email });
-  return u?.role || "user";
+  const user = await usersCollection.findOne({ email: normalizeEmail(email) });
+  return user?.role || "user";
 };
 
 const requireRole =
@@ -79,9 +77,21 @@ async function run() {
     const booksCollection = db.collection("books");
     const ordersCollection = db.collection("orders");
     const paymentsCollection = db.collection("payments");
+    const wishlistCollection = db.collection("wishlist");
 
     await client.db("admin").command({ ping: 1 });
     console.log("✅ MongoDB Ping OK");
+
+    // ✅ Unique email index (case-insensitive)
+    // If you had duplicates earlier, you already fixed them, so this should work now.
+    try {
+      await usersCollection.createIndex(
+        { email: 1 },
+        { unique: true, collation: { locale: "en", strength: 2 } }
+      );
+    } catch (e) {
+      console.log("⚠️ users email unique index not created:", e?.message);
+    }
 
     // =====================================================
     // USERS
@@ -91,16 +101,16 @@ async function run() {
     app.put("/users", async (req, res) => {
       const user = req.body;
 
-      if (!user?.email) {
-        return res.status(400).send({ message: "Email required" });
-      }
+      if (!user?.email) return res.status(400).send({ message: "Email required" });
 
-      const filter = { email: user.email };
+      const email = normalizeEmail(user.email);
+
+      const filter = { email };
 
       const updateDoc = {
         $set: {
           name: user.name || "",
-          email: user.email,
+          email,
           photoURL: user.photoURL || "",
           updatedAt: new Date(),
         },
@@ -112,25 +122,24 @@ async function run() {
 
       const result = await usersCollection.updateOne(filter, updateDoc, {
         upsert: true,
+        collation: { locale: "en", strength: 2 },
       });
 
       res.send(result);
     });
 
-    // ✅ Dynamic role fetching
+    // Role fetch (for client AuthContext)
     app.get("/users/role", verifyToken, async (req, res) => {
       try {
-        const email = req.user.email;
+        const email = normalizeEmail(req.user.email);
         const user = await usersCollection.findOne({ email });
-        if (!user) return res.send({ role: "user" });
-        res.send({ role: user.role || "user" });
-      } catch (error) {
-        console.error("GET /users/role error:", error);
+        res.send({ role: user?.role || "user" });
+      } catch (e) {
         res.status(500).send({ message: "Failed to fetch role" });
       }
     });
 
-    // ✅ Admin: get all users
+    // Admin: get all users
     app.get(
       "/users",
       verifyToken,
@@ -148,14 +157,14 @@ async function run() {
       }
     );
 
-    // ✅ Admin: update user role
+    // Admin: update user role
     app.patch(
       "/users/role/:email",
       verifyToken,
       requireRole(usersCollection, ["admin"]),
       async (req, res) => {
         try {
-          const { email } = req.params;
+          const email = normalizeEmail(req.params.email);
           const { role } = req.body;
 
           if (!["user", "librarian", "admin"].includes(role)) {
@@ -164,8 +173,10 @@ async function run() {
 
           const result = await usersCollection.updateOne(
             { email },
-            { $set: { role } }
+            { $set: { role } },
+            { collation: { locale: "en", strength: 2 } }
           );
+
           res.send(result);
         } catch (e) {
           res.status(500).send({ message: "Failed to update role" });
@@ -173,19 +184,11 @@ async function run() {
       }
     );
 
-    // ✅ Protected test route
-    app.get("/protected", verifyToken, (req, res) => {
-      res.send({
-        message: "Protected route accessed!",
-        user: req.user,
-      });
-    });
-
     // =====================================================
     // BOOKS
     // =====================================================
 
-    // Add Book (Librarian/Admin)
+    // Add book (librarian/admin)
     app.post(
       "/books",
       verifyToken,
@@ -199,44 +202,40 @@ async function run() {
             author: bookData.author,
             image: bookData.image,
             price: Number(bookData.price),
-            status: bookData.status || "unpublished", // published/unpublished
+            status: bookData.status || "unpublished",
             description: bookData.description || "",
-            librarianEmail: req.user.email,
+            librarianEmail: normalizeEmail(req.user.email),
             createdAt: new Date(),
           };
 
           const result = await booksCollection.insertOne(newBook);
           res.send(result);
-        } catch (error) {
-          console.error("POST /books error:", error);
+        } catch (e) {
           res.status(500).send({ message: "Failed to add book" });
         }
       }
     );
 
-    // ✅ Get my books (Librarian/Admin)  (KEEP THIS BEFORE /books/:id)
+    // My books (librarian/admin) - must be BEFORE /books/:id
     app.get(
       "/books/mine",
       verifyToken,
       requireRole(usersCollection, ["librarian", "admin"]),
       async (req, res) => {
         try {
-          const email = req.user.email;
-
+          const email = normalizeEmail(req.user.email);
           const result = await booksCollection
             .find({ librarianEmail: email })
             .sort({ createdAt: -1 })
             .toArray();
-
           res.send(result);
-        } catch (error) {
-          console.error("GET /books/mine error:", error);
+        } catch (e) {
           res.status(500).send({ message: "Failed to fetch books" });
         }
       }
     );
 
-    // ✅ Admin: get all books
+    // Admin: all books
     app.get(
       "/admin/books",
       verifyToken,
@@ -254,7 +253,7 @@ async function run() {
       }
     );
 
-    // ✅ Admin: publish/unpublish
+    // Admin: publish/unpublish
     app.patch(
       "/admin/books/:id/status",
       verifyToken,
@@ -264,6 +263,9 @@ async function run() {
           const { id } = req.params;
           const { status } = req.body;
 
+          if (!ObjectId.isValid(id)) {
+            return res.status(400).send({ message: "Invalid book id" });
+          }
           if (!["published", "unpublished"].includes(status)) {
             return res.status(400).send({ message: "Invalid status" });
           }
@@ -272,7 +274,6 @@ async function run() {
             { _id: new ObjectId(id) },
             { $set: { status } }
           );
-
           res.send(result);
         } catch (e) {
           res.status(500).send({ message: "Failed to update status" });
@@ -280,46 +281,38 @@ async function run() {
       }
     );
 
-    // ✅ Public books (published only) - supports query: /books?status=published
+    // Public books (supports ?status=published)
     app.get("/books", async (req, res) => {
       try {
         const { status } = req.query;
-
-        let query = {};
+        const query = {};
         if (status === "published") query.status = "published";
 
         const result = await booksCollection.find(query).toArray();
         res.send(result);
-      } catch (error) {
-        console.error("GET /books error:", error);
+      } catch (e) {
         res.status(500).send({ message: "Failed to fetch books" });
       }
     });
 
-    // ✅ Get single book by id
+    // Single book
     app.get("/books/:id", async (req, res) => {
       try {
         const { id } = req.params;
-
-        // guard invalid object id
         if (!ObjectId.isValid(id)) {
           return res.status(400).send({ message: "Invalid book id" });
         }
 
-        const book = await booksCollection.findOne({
-          _id: new ObjectId(id),
-        });
-
+        const book = await booksCollection.findOne({ _id: new ObjectId(id) });
         if (!book) return res.status(404).send({ message: "Book not found" });
 
         res.send(book);
-      } catch (error) {
-        console.error("GET /books/:id error:", error);
+      } catch (e) {
         res.status(500).send({ message: "Failed to fetch book" });
       }
     });
 
-    // Update Book (Admin OR Owner Librarian)
+    // Update book (admin OR owner librarian)
     app.patch("/books/:id", verifyToken, async (req, res) => {
       try {
         const { id } = req.params;
@@ -329,15 +322,12 @@ async function run() {
           return res.status(400).send({ message: "Invalid book id" });
         }
 
-        const book = await booksCollection.findOne({
-          _id: new ObjectId(id),
-        });
-
+        const book = await booksCollection.findOne({ _id: new ObjectId(id) });
         if (!book) return res.status(404).send({ message: "Book not found" });
 
         const role = await getUserRole(usersCollection, req.user.email);
 
-        if (role !== "admin" && book.librarianEmail !== req.user.email) {
+        if (role !== "admin" && book.librarianEmail !== normalizeEmail(req.user.email)) {
           return res.status(403).send({ message: "Forbidden" });
         }
 
@@ -349,13 +339,12 @@ async function run() {
         );
 
         res.send(result);
-      } catch (error) {
-        console.error("PATCH /books/:id error:", error);
+      } catch (e) {
         res.status(500).send({ message: "Failed to update book" });
       }
     });
 
-    // Delete Book (Admin OR Owner Librarian)
+    // Delete book (admin OR owner librarian) + delete all orders of that book
     app.delete("/books/:id", verifyToken, async (req, res) => {
       try {
         const { id } = req.params;
@@ -364,37 +353,29 @@ async function run() {
           return res.status(400).send({ message: "Invalid book id" });
         }
 
-        const book = await booksCollection.findOne({
-          _id: new ObjectId(id),
-        });
-
+        const book = await booksCollection.findOne({ _id: new ObjectId(id) });
         if (!book) return res.status(404).send({ message: "Book not found" });
 
         const role = await getUserRole(usersCollection, req.user.email);
 
-        if (role !== "admin" && book.librarianEmail !== req.user.email) {
+        if (role !== "admin" && book.librarianEmail !== normalizeEmail(req.user.email)) {
           return res.status(403).send({ message: "Forbidden" });
         }
 
-        await booksCollection.deleteOne({
-          _id: new ObjectId(id),
-        });
-
-        // requirement: deleting book deletes all orders of that book
+        await booksCollection.deleteOne({ _id: new ObjectId(id) });
         await ordersCollection.deleteMany({ bookId: new ObjectId(id) });
 
         res.send({ message: "Book deleted successfully" });
-      } catch (error) {
-        console.error("DELETE /books/:id error:", error);
+      } catch (e) {
         res.status(500).send({ message: "Delete failed" });
       }
     });
 
     // =====================================================
-    // ORDERS (User)
+    // ORDERS
     // =====================================================
 
-    // Create order (User)
+    // Create order
     app.post("/orders", verifyToken, async (req, res) => {
       try {
         const orderData = req.body;
@@ -402,7 +383,6 @@ async function run() {
         if (!orderData?.bookId) {
           return res.status(400).send({ message: "bookId required" });
         }
-
         if (!ObjectId.isValid(orderData.bookId)) {
           return res.status(400).send({ message: "Invalid bookId" });
         }
@@ -410,7 +390,7 @@ async function run() {
         const newOrder = {
           ...orderData,
           bookId: new ObjectId(orderData.bookId),
-          userEmail: req.user.email,
+          userEmail: normalizeEmail(req.user.email),
           status: "pending",
           paymentStatus: "unpaid",
           orderDate: new Date(),
@@ -418,94 +398,80 @@ async function run() {
 
         const result = await ordersCollection.insertOne(newOrder);
         res.send(result);
-      } catch (error) {
-        console.error("POST /orders error:", error);
+      } catch (e) {
         res.status(500).send({ message: "Server error" });
       }
     });
 
-    // Get my orders (User)
+    // My orders - must be BEFORE /orders/:id
     app.get("/orders/my", verifyToken, async (req, res) => {
       try {
-        const email = req.user.email;
-
+        const email = normalizeEmail(req.user.email);
         const result = await ordersCollection
           .find({ userEmail: email })
           .sort({ orderDate: -1 })
           .toArray();
-
         res.send(result);
-      } catch (error) {
-        console.error("GET /orders/my error:", error);
+      } catch (e) {
         res.status(500).send({ message: "Server error" });
       }
     });
 
-    // Get single order by id (User) - for payment/details
+    // Single order (payment page)
     app.get("/orders/:id", verifyToken, async (req, res) => {
       try {
         const { id } = req.params;
-
         if (!ObjectId.isValid(id)) {
           return res.status(400).send({ message: "Invalid order id" });
         }
 
-        const order = await ordersCollection.findOne({
-          _id: new ObjectId(id),
-        });
-
+        const order = await ordersCollection.findOne({ _id: new ObjectId(id) });
         if (!order) return res.status(404).send({ message: "Order not found" });
 
-        if (order.userEmail !== req.user.email) {
+        if (order.userEmail !== normalizeEmail(req.user.email)) {
           return res.status(403).send({ message: "Forbidden" });
         }
 
         res.send(order);
-      } catch (error) {
-        console.error("GET /orders/:id error:", error);
+      } catch (e) {
         res.status(500).send({ message: "Server error" });
       }
     });
 
-    // Cancel order (User) - only if pending
+    // Cancel order (pending + unpaid only)
     app.patch("/orders/:id/cancel", verifyToken, async (req, res) => {
       try {
         const { id } = req.params;
-        const email = req.user.email;
+        const email = normalizeEmail(req.user.email);
 
         if (!ObjectId.isValid(id)) {
           return res.status(400).send({ message: "Invalid order id" });
         }
 
-        const order = await ordersCollection.findOne({
-          _id: new ObjectId(id),
-        });
-
+        const order = await ordersCollection.findOne({ _id: new ObjectId(id) });
         if (!order) return res.status(404).send({ message: "Order not found" });
 
-        if (order.userEmail !== email) {
-          return res.status(403).send({ message: "Forbidden" });
-        }
+        if (order.userEmail !== email) return res.status(403).send({ message: "Forbidden" });
 
         if (order.status !== "pending") {
-          return res
-            .status(400)
-            .send({ message: "Only pending orders can be cancelled" });
+          return res.status(400).send({ message: "Only pending orders can be cancelled" });
+        }
+
+        if (order.paymentStatus === "paid") {
+          return res.status(400).send({ message: "Paid orders cannot be cancelled" });
         }
 
         const result = await ordersCollection.updateOne(
           { _id: new ObjectId(id) },
           { $set: { status: "cancelled" } }
         );
-
         res.send(result);
-      } catch (error) {
-        console.error("PATCH /orders/:id/cancel error:", error);
+      } catch (e) {
         res.status(500).send({ message: "Server error" });
       }
     });
 
-    // Pay for an order (User) - simple payment simulation
+    // Pay order (simple simulation) => creates payment record for invoices
     app.patch("/orders/:id/pay", verifyToken, async (req, res) => {
       try {
         const { id } = req.params;
@@ -514,18 +480,11 @@ async function run() {
           return res.status(400).send({ message: "Invalid order id" });
         }
 
-        const order = await ordersCollection.findOne({
-          _id: new ObjectId(id),
-        });
-
+        const order = await ordersCollection.findOne({ _id: new ObjectId(id) });
         if (!order) return res.status(404).send({ message: "Order not found" });
 
-        if (order.userEmail !== req.user.email) {
+        if (order.userEmail !== normalizeEmail(req.user.email)) {
           return res.status(403).send({ message: "Forbidden" });
-        }
-
-        if (order.status !== "pending") {
-          return res.status(400).send({ message: "Only pending orders can be paid" });
         }
 
         if (order.paymentStatus === "paid") {
@@ -534,47 +493,39 @@ async function run() {
 
         await ordersCollection.updateOne(
           { _id: new ObjectId(id) },
-          {
-            $set: {
-              paymentStatus: "paid",
-              paidAt: new Date(),
-            },
-          }
+          { $set: { paymentStatus: "paid", paidAt: new Date() } }
         );
 
         await paymentsCollection.insertOne({
           orderId: new ObjectId(id),
-          userEmail: req.user.email,
+          userEmail: normalizeEmail(req.user.email),
           amount: Number(order.price || 0),
           paymentId: `PAY-${Date.now()}`,
           date: new Date(),
         });
 
         res.send({ message: "Payment successful" });
-      } catch (error) {
-        console.error("PATCH /orders/:id/pay error:", error);
+      } catch (e) {
         res.status(500).send({ message: "Server error" });
       }
     });
 
     // =====================================================
-    // ORDERS (Librarian/Admin)
+    // LIBRARIAN / ADMIN - ORDERS FOR THEIR BOOKS
     // =====================================================
 
-    // Librarian sees all orders for books they added
+    // Librarian/Admin view orders (admin sees all, librarian sees own)
     app.get(
       "/librarian/orders",
       verifyToken,
       requireRole(usersCollection, ["librarian", "admin"]),
       async (req, res) => {
         try {
-          const librarianEmail = req.user.email;
+          const librarianEmail = normalizeEmail(req.user.email);
           const role = await getUserRole(usersCollection, librarianEmail);
 
           const matchStage =
-            role === "admin"
-              ? {} // admin sees all orders
-              : { "bookData.librarianEmail": librarianEmail };
+            role === "admin" ? {} : { "bookData.librarianEmail": librarianEmail };
 
           const result = await ordersCollection
             .aggregate([
@@ -599,7 +550,6 @@ async function run() {
                   customerName: 1,
                   phone: 1,
                   address: 1,
-
                   bookId: 1,
                   bookName: "$bookData.name",
                   bookImage: "$bookData.image",
@@ -612,14 +562,13 @@ async function run() {
             .toArray();
 
           res.send(result);
-        } catch (error) {
-          console.error("GET /librarian/orders error:", error);
-          res.status(500).send({ message: "Failed to fetch librarian orders" });
+        } catch (e) {
+          res.status(500).send({ message: "Failed to fetch orders" });
         }
       }
     );
 
-    // Librarian/Admin: update order status (pending->shipped->delivered)
+    // Librarian/Admin update order status
     app.patch(
       "/librarian/orders/:id/status",
       verifyToken,
@@ -637,15 +586,16 @@ async function run() {
             return res.status(400).send({ message: "Invalid status" });
           }
 
-          // load order + book to verify ownership (unless admin)
           const order = await ordersCollection.findOne({ _id: new ObjectId(id) });
           if (!order) return res.status(404).send({ message: "Order not found" });
 
           const role = await getUserRole(usersCollection, req.user.email);
+
           if (role !== "admin") {
             const book = await booksCollection.findOne({ _id: order.bookId });
             if (!book) return res.status(404).send({ message: "Book not found" });
-            if (book.librarianEmail !== req.user.email) {
+
+            if (book.librarianEmail !== normalizeEmail(req.user.email)) {
               return res.status(403).send({ message: "Forbidden" });
             }
           }
@@ -662,55 +612,96 @@ async function run() {
       }
     );
 
-    // Librarian/Admin: cancel an order
-    app.patch(
-      "/librarian/orders/:id/cancel",
-      verifyToken,
-      requireRole(usersCollection, ["librarian", "admin"]),
-      async (req, res) => {
-        try {
-          const { id } = req.params;
-
-          if (!ObjectId.isValid(id)) {
-            return res.status(400).send({ message: "Invalid order id" });
-          }
-
-          const order = await ordersCollection.findOne({ _id: new ObjectId(id) });
-          if (!order) return res.status(404).send({ message: "Order not found" });
-
-          const role = await getUserRole(usersCollection, req.user.email);
-          if (role !== "admin") {
-            const book = await booksCollection.findOne({ _id: order.bookId });
-            if (!book) return res.status(404).send({ message: "Book not found" });
-            if (book.librarianEmail !== req.user.email) {
-              return res.status(403).send({ message: "Forbidden" });
-            }
-          }
-
-          const result = await ordersCollection.updateOne(
-            { _id: new ObjectId(id) },
-            { $set: { status: "cancelled" } }
-          );
-
-          res.send(result);
-        } catch (e) {
-          res.status(500).send({ message: "Failed to cancel order" });
-        }
-      }
-    );
-
     // =====================================================
-    // PAYMENTS (User) - list invoices
+    // PAYMENTS (Invoices)
     // =====================================================
     app.get("/payments/my", verifyToken, async (req, res) => {
       try {
         const result = await paymentsCollection
-          .find({ userEmail: req.user.email })
+          .find({ userEmail: normalizeEmail(req.user.email) })
           .sort({ date: -1 })
           .toArray();
         res.send(result);
       } catch (e) {
         res.status(500).send({ message: "Failed to fetch payments" });
+      }
+    });
+
+    // =====================================================
+    // WISHLIST
+    // =====================================================
+
+    // Add to wishlist
+    app.post("/wishlist", verifyToken, async (req, res) => {
+      try {
+        const data = req.body;
+
+        if (!data?.bookId) return res.status(400).send({ message: "bookId required" });
+        if (!ObjectId.isValid(data.bookId)) {
+          return res.status(400).send({ message: "Invalid bookId" });
+        }
+
+        const userEmail = normalizeEmail(req.user.email);
+
+        const exists = await wishlistCollection.findOne({
+          userEmail,
+          bookId: new ObjectId(data.bookId),
+        });
+
+        if (exists) return res.send({ message: "Already in wishlist" });
+
+        const doc = {
+          userEmail,
+          bookId: new ObjectId(data.bookId),
+          bookName: data.bookName || "",
+          bookAuthor: data.bookAuthor || "",
+          bookImage: data.bookImage || "",
+          price: Number(data.price || 0),
+          createdAt: new Date(),
+        };
+
+        const result = await wishlistCollection.insertOne(doc);
+        res.send(result);
+      } catch (e) {
+        res.status(500).send({ message: "Failed to add wishlist" });
+      }
+    });
+
+    // My wishlist
+    app.get("/wishlist/my", verifyToken, async (req, res) => {
+      try {
+        const userEmail = normalizeEmail(req.user.email);
+        const result = await wishlistCollection
+          .find({ userEmail })
+          .sort({ createdAt: -1 })
+          .toArray();
+        res.send(result);
+      } catch (e) {
+        res.status(500).send({ message: "Failed to fetch wishlist" });
+      }
+    });
+
+    // Remove wishlist item
+    app.delete("/wishlist/:id", verifyToken, async (req, res) => {
+      try {
+        const { id } = req.params;
+        if (!ObjectId.isValid(id)) {
+          return res.status(400).send({ message: "Invalid wishlist id" });
+        }
+
+        const userEmail = normalizeEmail(req.user.email);
+
+        const item = await wishlistCollection.findOne({ _id: new ObjectId(id) });
+        if (!item) return res.status(404).send({ message: "Not found" });
+
+        if (item.userEmail !== userEmail) {
+          return res.status(403).send({ message: "Forbidden" });
+        }
+
+        const result = await wishlistCollection.deleteOne({ _id: new ObjectId(id) });
+        res.send(result);
+      } catch (e) {
+        res.status(500).send({ message: "Failed to remove" });
       }
     });
 

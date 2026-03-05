@@ -1,4 +1,3 @@
-// ✅ server/index.js (FULL - Users, Books, Orders, Librarian Orders, Admin, Payments, Invoices, Wishlist, Reviews)
 const express = require("express");
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const cors = require("cors");
@@ -24,14 +23,14 @@ app.use(express.json());
 // Root
 // ===============================
 app.get("/", (req, res) => {
-  res.send("BookOrbit server is running ✅");
+  res.send("BookOrbit server is running ");
 });
 
 // ===============================
 // MongoDB Setup
 // ===============================
 const uri = process.env.MONGODB_URI;
-if (!uri) console.log("❌ MONGODB_URI missing in .env");
+if (!uri) console.log("MONGODB_URI missing in .env");
 
 const client = new MongoClient(uri, {
   serverApi: {
@@ -69,7 +68,7 @@ const requireRole =
 async function run() {
   try {
     await client.connect();
-    console.log("✅ MongoDB Connected!");
+    console.log("MongoDB Connected!");
 
     const db = client.db("bookorbitDB");
 
@@ -79,23 +78,23 @@ async function run() {
     const paymentsCollection = db.collection("payments");
     const wishlistCollection = db.collection("wishlist");
 
-    // ✅ REVIEWS COLLECTION
+    //  REVIEWS COLLECTION
     const reviewsCollection = db.collection("reviews");
 
     await client.db("admin").command({ ping: 1 });
     console.log("✅ MongoDB Ping OK");
 
-    // ✅ Unique email index (case-insensitive)
+    // Unique email index (case-insensitive)
     try {
       await usersCollection.createIndex(
         { email: 1 },
         { unique: true, collation: { locale: "en", strength: 2 } }
       );
     } catch (e) {
-      console.log("⚠️ users email unique index not created:", e?.message);
+      console.log("users email unique index not created:", e?.message);
     }
 
-    // ✅ Reviews indexes
+    // Reviews indexes
     try {
       await reviewsCollection.createIndex({ bookId: 1, createdAt: -1 });
       await reviewsCollection.createIndex({ userEmail: 1, createdAt: -1 });
@@ -108,7 +107,7 @@ async function run() {
       console.log("⚠️ reviews indexes:", e?.message);
     }
 
-    // ✅ Recalculate rating for a book
+    // Recalculate rating for a book
     const recalcBookRating = async (bookId) => {
       const stats = await reviewsCollection
         .aggregate([
@@ -425,7 +424,7 @@ async function run() {
     });
 
     // =====================================================
-    // ✅ REVIEWS & RATINGS
+    // REVIEWS & RATINGS
     // =====================================================
 
     // Get reviews for a book: /reviews?bookId=xxxx
@@ -834,7 +833,7 @@ async function run() {
 
       const role = await getUserRole(usersCollection, req.user.email);
 
-  // ✅ librarian can only cancel orders for their own books
+  // librarian can only cancel orders for their own books
   if (role !== "admin") {
         const book = await booksCollection.findOne({ _id: order.bookId });
         if (!book) return res.status(404).send({ message: "Book not found" });
@@ -1011,7 +1010,7 @@ async function run() {
       }
     });
 
-    console.log("✅ Routes loaded");
+    console.log("Routes loaded");
   } catch (error) {
     console.error("❌ run() error:", error);
   }
@@ -1020,5 +1019,5 @@ async function run() {
 run().catch(console.dir);
 
 app.listen(port, () => {
-  console.log(`🚀 Server running on port ${port}`);
+  console.log(`Server running on port ${port}`);
 });

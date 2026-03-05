@@ -1,4 +1,4 @@
-// ✅ server/index.js (FULL - Users, Books, Orders, Librarian Orders, Admin, Payments, Invoices, Wishlist)
+// ✅ server/index.js (FULL - Users, Books, Orders, Librarian Orders, Admin, Payments, Invoices, Wishlist, Reviews)
 const express = require("express");
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const cors = require("cors");
@@ -79,6 +79,9 @@ async function run() {
     const paymentsCollection = db.collection("payments");
     const wishlistCollection = db.collection("wishlist");
 
+    // ✅ REVIEWS COLLECTION
+    const reviewsCollection = db.collection("reviews");
+
     await client.db("admin").command({ ping: 1 });
     console.log("✅ MongoDB Ping OK");
 
@@ -92,6 +95,47 @@ async function run() {
       console.log("⚠️ users email unique index not created:", e?.message);
     }
 
+    // ✅ Reviews indexes
+    try {
+      await reviewsCollection.createIndex({ bookId: 1, createdAt: -1 });
+      await reviewsCollection.createIndex({ userEmail: 1, createdAt: -1 });
+      // one review per user per book
+      await reviewsCollection.createIndex(
+        { bookId: 1, userEmail: 1 },
+        { unique: true }
+      );
+    } catch (e) {
+      console.log("⚠️ reviews indexes:", e?.message);
+    }
+
+    // ✅ Recalculate rating for a book
+    const recalcBookRating = async (bookId) => {
+      const stats = await reviewsCollection
+        .aggregate([
+          { $match: { bookId: new ObjectId(bookId) } },
+          {
+            $group: {
+              _id: "$bookId",
+              avgRating: { $avg: "$rating" },
+              reviewCount: { $sum: 1 },
+            },
+          },
+        ])
+        .toArray();
+
+      const avgRating = stats?.[0]?.avgRating
+        ? Number(stats[0].avgRating.toFixed(2))
+        : 0;
+      const reviewCount = stats?.[0]?.reviewCount || 0;
+
+      await booksCollection.updateOne(
+        { _id: new ObjectId(bookId) },
+        { $set: { avgRating, reviewCount } }
+      );
+
+      return { avgRating, reviewCount };
+    };
+
     // =====================================================
     // USERS
     // =====================================================
@@ -100,7 +144,8 @@ async function run() {
     app.put("/users", async (req, res) => {
       const user = req.body;
 
-      if (!user?.email) return res.status(400).send({ message: "Email required" });
+      if (!user?.email)
+        return res.status(400).send({ message: "Email required" });
 
       const email = normalizeEmail(user.email);
 
@@ -204,6 +249,8 @@ async function run() {
             status: bookData.status || "unpublished",
             description: bookData.description || "",
             librarianEmail: normalizeEmail(req.user.email),
+            avgRating: 0,
+            reviewCount: 0,
             createdAt: new Date(),
           };
 
@@ -346,7 +393,7 @@ async function run() {
       }
     });
 
-    // Delete book (admin OR owner librarian) + delete all orders
+    // Delete book (admin OR owner librarian) + delete all orders + delete reviews
     app.delete("/books/:id", verifyToken, async (req, res) => {
       try {
         const { id } = req.params;
@@ -369,10 +416,152 @@ async function run() {
 
         await booksCollection.deleteOne({ _id: new ObjectId(id) });
         await ordersCollection.deleteMany({ bookId: new ObjectId(id) });
+        await reviewsCollection.deleteMany({ bookId: new ObjectId(id) }); // ✅
 
         res.send({ message: "Book deleted successfully" });
       } catch (e) {
         res.status(500).send({ message: "Delete failed" });
+      }
+    });
+
+    // =====================================================
+    // ✅ REVIEWS & RATINGS
+    // =====================================================
+
+    // Get reviews for a book: /reviews?bookId=xxxx
+    app.get("/reviews", async (req, res) => {
+      try {
+        const { bookId } = req.query;
+
+        if (!bookId || !ObjectId.isValid(bookId)) {
+          return res.status(400).send({ message: "Valid bookId required" });
+        }
+
+        const reviews = await reviewsCollection
+          .find({ bookId: new ObjectId(bookId) })
+          .sort({ createdAt: -1 })
+          .toArray();
+
+        res.send(reviews);
+      } catch (e) {
+        console.log("GET /reviews error:", e);
+        res.status(500).send({ message: "Failed to fetch reviews" });
+      }
+    });
+
+    // Check eligibility: user must have ordered this book & not reviewed before
+    app.get("/reviews/eligible/:bookId", verifyToken, async (req, res) => {
+      try {
+        const { bookId } = req.params;
+
+        if (!ObjectId.isValid(bookId)) {
+          return res
+            .status(400)
+            .send({ eligible: false, reason: "Invalid bookId" });
+        }
+
+        const email = normalizeEmail(req.user.email);
+
+        const hasOrder = await ordersCollection.findOne({
+          userEmail: email,
+          bookId: new ObjectId(bookId),
+          status: { $ne: "cancelled" },
+        });
+
+        if (!hasOrder) {
+          return res.send({
+            eligible: false,
+            reason: "You must order this book first.",
+          });
+        }
+
+        const already = await reviewsCollection.findOne({
+          userEmail: email,
+          bookId: new ObjectId(bookId),
+        });
+
+        if (already) {
+          return res.send({
+            eligible: false,
+            reason: "You already reviewed this book.",
+          });
+        }
+
+        res.send({ eligible: true });
+      } catch (e) {
+        console.log("GET /reviews/eligible error:", e);
+        res.status(500).send({
+          eligible: false,
+          reason: "Server error",
+        });
+      }
+    });
+
+    // Add a review
+    app.post("/reviews", verifyToken, async (req, res) => {
+      try {
+        const { bookId, rating, comment } = req.body;
+
+        if (!bookId || !ObjectId.isValid(bookId)) {
+          return res.status(400).send({ message: "Valid bookId required" });
+        }
+
+        const ratingNum = Number(rating);
+        if (!ratingNum || ratingNum < 1 || ratingNum > 5) {
+          return res.status(400).send({ message: "Rating must be 1 to 5" });
+        }
+
+        const email = normalizeEmail(req.user.email);
+
+        const hasOrder = await ordersCollection.findOne({
+          userEmail: email,
+          bookId: new ObjectId(bookId),
+          status: { $ne: "cancelled" },
+        });
+
+        if (!hasOrder) {
+          return res
+            .status(403)
+            .send({ message: "You must order this book to review it." });
+        }
+
+        const already = await reviewsCollection.findOne({
+          userEmail: email,
+          bookId: new ObjectId(bookId),
+        });
+
+        if (already) {
+          return res
+            .status(400)
+            .send({ message: "You already reviewed this book." });
+        }
+
+        const reviewDoc = {
+          bookId: new ObjectId(bookId),
+          userEmail: email,
+          userName: req.user?.name || req.user?.displayName || "User",
+          userPhoto: req.user?.picture || req.user?.photoURL || "",
+          rating: ratingNum,
+          comment: (comment || "").trim(),
+          createdAt: new Date(),
+        };
+
+        const result = await reviewsCollection.insertOne(reviewDoc);
+
+        const stats = await recalcBookRating(bookId);
+
+        res.send({ insertedId: result.insertedId, ...stats });
+      } catch (e) {
+        console.log("POST /reviews error:", e);
+
+        // duplicate index error
+        if (e?.code === 11000) {
+          return res
+            .status(400)
+            .send({ message: "You already reviewed this book." });
+        }
+
+        res.status(500).send({ message: "Failed to submit review" });
       }
     });
 
@@ -627,6 +816,45 @@ async function run() {
         }
       }
     );
+
+    app.patch(
+  "/librarian/orders/:id/cancel",
+  verifyToken,
+  requireRole(usersCollection, ["librarian", "admin"]),
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+
+      if (!ObjectId.isValid(id)) {
+        return res.status(400).send({ message: "Invalid order id" });
+      }
+
+      const order = await ordersCollection.findOne({ _id: new ObjectId(id) });
+      if (!order) return res.status(404).send({ message: "Order not found" });
+
+      const role = await getUserRole(usersCollection, req.user.email);
+
+  // ✅ librarian can only cancel orders for their own books
+  if (role !== "admin") {
+        const book = await booksCollection.findOne({ _id: order.bookId });
+        if (!book) return res.status(404).send({ message: "Book not found" });
+
+        if (book.librarianEmail !== normalizeEmail(req.user.email)) {
+          return res.status(403).send({ message: "Forbidden" });
+        }
+      }
+
+      const result = await ordersCollection.updateOne(
+        { _id: new ObjectId(id) },
+        { $set: { status: "cancelled" } }
+      );
+
+      res.send(result);
+    } catch (e) {
+      res.status(500).send({ message: "Failed to cancel order" });
+    }
+  }
+);
 
     // =====================================================
     // PAYMENTS + INVOICES

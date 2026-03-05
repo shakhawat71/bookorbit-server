@@ -1,4 +1,4 @@
-// ✅ server/index.js (FULL - with Users, Books, Orders, Payments, Wishlist, Admin + Librarian features)
+// ✅ server/index.js (FULL - Users, Books, Orders, Librarian Orders, Admin, Payments, Invoices, Wishlist)
 const express = require("express");
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const cors = require("cors");
@@ -83,7 +83,6 @@ async function run() {
     console.log("✅ MongoDB Ping OK");
 
     // ✅ Unique email index (case-insensitive)
-    // If you had duplicates earlier, you already fixed them, so this should work now.
     try {
       await usersCollection.createIndex(
         { email: 1 },
@@ -327,7 +326,10 @@ async function run() {
 
         const role = await getUserRole(usersCollection, req.user.email);
 
-        if (role !== "admin" && book.librarianEmail !== normalizeEmail(req.user.email)) {
+        if (
+          role !== "admin" &&
+          book.librarianEmail !== normalizeEmail(req.user.email)
+        ) {
           return res.status(403).send({ message: "Forbidden" });
         }
 
@@ -344,7 +346,7 @@ async function run() {
       }
     });
 
-    // Delete book (admin OR owner librarian) + delete all orders of that book
+    // Delete book (admin OR owner librarian) + delete all orders
     app.delete("/books/:id", verifyToken, async (req, res) => {
       try {
         const { id } = req.params;
@@ -358,7 +360,10 @@ async function run() {
 
         const role = await getUserRole(usersCollection, req.user.email);
 
-        if (role !== "admin" && book.librarianEmail !== normalizeEmail(req.user.email)) {
+        if (
+          role !== "admin" &&
+          book.librarianEmail !== normalizeEmail(req.user.email)
+        ) {
           return res.status(403).send({ message: "Forbidden" });
         }
 
@@ -451,27 +456,34 @@ async function run() {
         const order = await ordersCollection.findOne({ _id: new ObjectId(id) });
         if (!order) return res.status(404).send({ message: "Order not found" });
 
-        if (order.userEmail !== email) return res.status(403).send({ message: "Forbidden" });
+        if (order.userEmail !== email) {
+          return res.status(403).send({ message: "Forbidden" });
+        }
 
         if (order.status !== "pending") {
-          return res.status(400).send({ message: "Only pending orders can be cancelled" });
+          return res
+            .status(400)
+            .send({ message: "Only pending orders can be cancelled" });
         }
 
         if (order.paymentStatus === "paid") {
-          return res.status(400).send({ message: "Paid orders cannot be cancelled" });
+          return res
+            .status(400)
+            .send({ message: "Paid orders cannot be cancelled" });
         }
 
         const result = await ordersCollection.updateOne(
           { _id: new ObjectId(id) },
           { $set: { status: "cancelled" } }
         );
+
         res.send(result);
       } catch (e) {
         res.status(500).send({ message: "Server error" });
       }
     });
 
-    // Pay order (simple simulation) => creates payment record for invoices
+    // Pay order (simulation) => create payment record
     app.patch("/orders/:id/pay", verifyToken, async (req, res) => {
       try {
         const { id } = req.params;
@@ -514,7 +526,6 @@ async function run() {
     // LIBRARIAN / ADMIN - ORDERS FOR THEIR BOOKS
     // =====================================================
 
-    // Librarian/Admin view orders (admin sees all, librarian sees own)
     app.get(
       "/librarian/orders",
       verifyToken,
@@ -525,7 +536,9 @@ async function run() {
           const role = await getUserRole(usersCollection, librarianEmail);
 
           const matchStage =
-            role === "admin" ? {} : { "bookData.librarianEmail": librarianEmail };
+            role === "admin"
+              ? {}
+              : { "bookData.librarianEmail": librarianEmail };
 
           const result = await ordersCollection
             .aggregate([
@@ -568,7 +581,6 @@ async function run() {
       }
     );
 
-    // Librarian/Admin update order status
     app.patch(
       "/librarian/orders/:id/status",
       verifyToken,
@@ -582,11 +594,15 @@ async function run() {
             return res.status(400).send({ message: "Invalid order id" });
           }
 
-          if (!["pending", "shipped", "delivered", "cancelled"].includes(status)) {
+          if (
+            !["pending", "shipped", "delivered", "cancelled"].includes(status)
+          ) {
             return res.status(400).send({ message: "Invalid status" });
           }
 
-          const order = await ordersCollection.findOne({ _id: new ObjectId(id) });
+          const order = await ordersCollection.findOne({
+            _id: new ObjectId(id),
+          });
           if (!order) return res.status(404).send({ message: "Order not found" });
 
           const role = await getUserRole(usersCollection, req.user.email);
@@ -613,8 +629,9 @@ async function run() {
     );
 
     // =====================================================
-    // PAYMENTS (Invoices)
+    // PAYMENTS + INVOICES
     // =====================================================
+
     app.get("/payments/my", verifyToken, async (req, res) => {
       try {
         const result = await paymentsCollection
@@ -627,16 +644,76 @@ async function run() {
       }
     });
 
+    // ✅ Invoices for logged-in user (payments + orders + books)
+    app.get("/invoices/my", verifyToken, async (req, res) => {
+      try {
+        const email = normalizeEmail(req.user.email);
+
+        const result = await paymentsCollection
+          .aggregate([
+            { $match: { userEmail: email } },
+
+            {
+              $lookup: {
+                from: "orders",
+                localField: "orderId",
+                foreignField: "_id",
+                as: "order",
+              },
+            },
+            { $unwind: { path: "$order", preserveNullAndEmptyArrays: true } },
+
+            {
+              $lookup: {
+                from: "books",
+                localField: "order.bookId",
+                foreignField: "_id",
+                as: "book",
+              },
+            },
+            { $unwind: { path: "$book", preserveNullAndEmptyArrays: true } },
+
+            { $sort: { date: -1 } },
+
+            {
+              $project: {
+                _id: 1,
+                paymentId: 1,
+                amount: 1,
+                date: 1,
+
+                orderId: 1,
+                orderStatus: "$order.status",
+                paymentStatus: "$order.paymentStatus",
+
+                bookId: "$order.bookId",
+                bookName: { $ifNull: ["$book.name", "$order.bookName"] },
+                bookImage: { $ifNull: ["$book.image", "$order.bookImage"] },
+                bookAuthor: { $ifNull: ["$book.author", ""] },
+                price: { $ifNull: ["$book.price", "$order.price"] },
+              },
+            },
+          ])
+          .toArray();
+
+        res.send(result);
+      } catch (e) {
+        console.log("GET /invoices/my error:", e);
+        res.status(500).send({ message: "Failed to fetch invoices" });
+      }
+    });
+
     // =====================================================
     // WISHLIST
     // =====================================================
 
-    // Add to wishlist
     app.post("/wishlist", verifyToken, async (req, res) => {
       try {
         const data = req.body;
 
-        if (!data?.bookId) return res.status(400).send({ message: "bookId required" });
+        if (!data?.bookId) {
+          return res.status(400).send({ message: "bookId required" });
+        }
         if (!ObjectId.isValid(data.bookId)) {
           return res.status(400).send({ message: "Invalid bookId" });
         }
@@ -667,7 +744,6 @@ async function run() {
       }
     });
 
-    // My wishlist
     app.get("/wishlist/my", verifyToken, async (req, res) => {
       try {
         const userEmail = normalizeEmail(req.user.email);
@@ -681,10 +757,10 @@ async function run() {
       }
     });
 
-    // Remove wishlist item
     app.delete("/wishlist/:id", verifyToken, async (req, res) => {
       try {
         const { id } = req.params;
+
         if (!ObjectId.isValid(id)) {
           return res.status(400).send({ message: "Invalid wishlist id" });
         }
@@ -698,7 +774,9 @@ async function run() {
           return res.status(403).send({ message: "Forbidden" });
         }
 
-        const result = await wishlistCollection.deleteOne({ _id: new ObjectId(id) });
+        const result = await wishlistCollection.deleteOne({
+          _id: new ObjectId(id),
+        });
         res.send(result);
       } catch (e) {
         res.status(500).send({ message: "Failed to remove" });

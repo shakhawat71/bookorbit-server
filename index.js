@@ -440,24 +440,24 @@ async function run() {
 
     // Get reviews for a book: /reviews?bookId=xxxx
     app.get("/reviews", async (req, res) => {
-      try {
-        const { bookId } = req.query;
+  try {
+    const { bookId } = req.query;
 
-        if (!bookId || !ObjectId.isValid(bookId)) {
-          return res.status(400).send({ message: "Valid bookId required" });
-        }
+    if (!bookId || !ObjectId.isValid(bookId)) {
+      return res.status(400).send({ message: "Valid bookId required" });
+    }
 
-        const reviews = await reviewsCollection
-          .find({ bookId: new ObjectId(bookId) })
-          .sort({ createdAt: -1 })
-          .toArray();
+    const reviews = await reviewsCollection
+      .find({ bookId: new ObjectId(bookId) })
+      .sort({ createdAt: -1 })
+      .toArray();
 
-        res.send(reviews);
-      } catch (e) {
-        console.log("GET /reviews error:", e);
-        res.status(500).send({ message: "Failed to fetch reviews" });
-      }
-    });
+    res.send(reviews);
+  } catch (e) {
+    console.log("GET /reviews error:", e);
+    res.status(500).send({ message: "Failed to fetch reviews" });
+  }
+});
 
     // Check eligibility: user must have ordered this book & not reviewed before
     app.get("/reviews/eligible/:bookId", verifyToken, async (req, res) => {

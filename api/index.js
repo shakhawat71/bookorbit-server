@@ -8,7 +8,7 @@ const verifyToken = require("../middlewares/verifyToken");
 
 const app = express();
 
-// CORS (allow local +  deployed client domain)
+// ✅ CORS (allow local + your deployed client domain)
 app.use(
   cors({
     origin: [
@@ -22,7 +22,7 @@ app.use(
 
 app.use(express.json());
 
-// Root
+// ✅ Root
 app.get("/", (req, res) => {
   res.send("BookOrbit server is running ✅ (Vercel)");
 });
@@ -247,6 +247,6 @@ app.get("/books/:id", async (req, res) => {
 });
 
 // =====================================================
-// IMPORTANT: Export app for Vercel
+// ✅ IMPORTANT: Export app for Vercel
 // =====================================================
 module.exports = app;

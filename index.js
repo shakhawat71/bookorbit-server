@@ -13,10 +13,7 @@ const port = process.env.PORT || 5000;
 // ===============================
 app.use(
   cors({
-    origin: [
-      "http://localhost:5173", 
-      "https://bookorbit-388cb.web.app", 
-      "https://console.firebase.google.com/project/bookorbit-388cb/overview"],
+    origin: ["http://localhost:5173"],
     credentials: true,
   })
 );
@@ -1022,7 +1019,3 @@ async function run() {
 run().catch(console.dir);
 
 module.exports = app;
-
-
-
-

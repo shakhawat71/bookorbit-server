@@ -223,6 +223,20 @@ app.put("/users", verifyToken, async (req, res) => {
 });
 
 // Role fetch
+// app.get("/users/role", verifyToken, async (req, res) => {
+//   try {
+//     const db = await getDB();
+//     const usersCollection = db.collection("users");
+
+//     const email = normalizeEmail(req.user.email);
+//     const user = await usersCollection.findOne({ email });
+
+//     res.send({ role: user?.role || "user" });
+//   } catch (e) {
+//     res.status(500).send({ message: "Failed to fetch role" });
+//   }
+// });
+
 app.get("/users/role", verifyToken, async (req, res) => {
   try {
     const db = await getDB();
@@ -233,7 +247,11 @@ app.get("/users/role", verifyToken, async (req, res) => {
 
     res.send({ role: user?.role || "user" });
   } catch (e) {
-    res.status(500).send({ message: "Failed to fetch role" });
+    console.error("GET /users/role error:", e);
+    res.status(500).send({
+      message: "Failed to fetch role",
+      error: e?.message || "Unknown error",
+    });
   }
 });
 
@@ -387,6 +405,27 @@ app.patch(
 );
 
 // Public books
+// app.get("/books", async (req, res) => {
+//   try {
+//     const db = await getDB();
+//     const booksCollection = db.collection("books");
+
+//     const { status } = req.query;
+//     const query = {};
+
+//     if (status === "published") query.status = "published";
+
+//     const result = await booksCollection
+//       .find(query)
+//       .sort({ createdAt: -1 })
+//       .toArray();
+
+//     res.send(result);
+//   } catch (e) {
+//     res.status(500).send({ message: "Failed to fetch books" });
+//   }
+// });
+
 app.get("/books", async (req, res) => {
   try {
     const db = await getDB();
@@ -404,7 +443,11 @@ app.get("/books", async (req, res) => {
 
     res.send(result);
   } catch (e) {
-    res.status(500).send({ message: "Failed to fetch books" });
+    console.error("GET /books error:", e);
+    res.status(500).send({
+      message: "Failed to fetch books",
+      error: e?.message || "Unknown error",
+    });
   }
 });
 
